@@ -1,0 +1,268 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function userRootExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['ownerId', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid
+        && data.email is string && data.email.size() <= 254
+        && data.displayName is string && data.displayName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPerson(data, userId) {
+      return data.keys().hasAll(['ownerId', 'name', 'code', 'codeKey', 'phone', 'place', 'email', 'notes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'code', 'codeKey', 'phone', 'place', 'email', 'notes', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 40 && data.code.matches('^[A-Za-z0-9_\\-\\. ]+$')
+        && data.codeKey is string && data.codeKey.size() >= 1 && data.codeKey.size() <= 64 && data.codeKey.matches('^[A-Z0-9_\\-]+$')
+        && data.phone is string && data.phone.size() <= 30
+        && data.place is string && data.place.size() <= 200
+        && data.email is string && data.email.size() <= 160
+        && data.notes is string && data.notes.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPersonCodeIndex(data, userId) {
+      return data.keys().hasAll(['ownerId', 'personId', 'code', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'personId', 'code', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid
+        && isValidId(data.personId)
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data, userId) {
+      return data.keys().hasAll(['ownerId', 'personId', 'type', 'amount', 'date', 'description', 'referenceNumber', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'personId', 'type', 'amount', 'date', 'description', 'referenceNumber', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid
+        && isValidId(data.personId)
+        && data.type is string && data.type in ['GIVEN', 'RECEIVED', 'PAYABLE', 'PAID']
+        && data.amount is number && data.amount > 0 && data.amount <= 9999999999.99
+        && data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.description is string && data.description.size() <= 500
+        && data.referenceNumber is string && data.referenceNumber.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPreferencesSetting(data, userId) {
+      return data.keys().hasAll(['ownerId', 'settingType', 'currencyCode', 'currencySymbol', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'settingType', 'currencyCode', 'currencySymbol', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid
+        && data.settingType == 'preferences'
+        && data.currencyCode is string && data.currencyCode.size() >= 1 && data.currencyCode.size() <= 10
+        && data.currencySymbol is string && data.currencySymbol.size() >= 1 && data.currencySymbol.size() <= 10
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPinSetting(data, userId) {
+      return data.keys().hasAll(['ownerId', 'settingType', 'pinEnabled', 'pinHash', 'pinSalt', 'pinLength', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'settingType', 'pinEnabled', 'pinHash', 'pinSalt', 'pinLength', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid
+        && data.settingType == 'pin'
+        && data.pinEnabled is bool
+        && data.pinHash is string && data.pinHash.size() <= 256
+        && data.pinSalt is string && data.pinSalt.size() <= 128
+        && data.pinLength is number && (data.pinLength == 4 || data.pinLength == 6)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserSetting(data, userId, settingId) {
+      return (settingId == 'preferences' && isValidPreferencesSetting(data, userId))
+        || (settingId == 'pin' && isValidPinSetting(data, userId));
+    }
+
+    // --- Collection: /users/{userId} ---
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt']);
+
+      allow delete: if false;
+
+      // --- Subcollection: /users/{userId}/persons/{personId} ---
+      match /persons/{personId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(personId) && userRootExists(userId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(personId)
+          && isValidPerson(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && userRootExists(userId)
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/personCodes/$(incoming().codeKey));
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(personId)
+          && isValidPerson(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'codeKey', 'phone', 'place', 'email', 'notes', 'updatedAt'])
+          && userRootExists(userId)
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/personCodes/$(incoming().codeKey));
+
+        allow delete: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(personId)
+          && userRootExists(userId);
+      }
+
+      // --- Subcollection: /users/{userId}/personCodes/{codeKey} ---
+      match /personCodes/{codeKey} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(codeKey) && userRootExists(userId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(codeKey)
+          && isValidPersonCodeIndex(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && userRootExists(userId)
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/persons/$(incoming().personId));
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(codeKey)
+          && isValidPersonCodeIndex(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().personId == existing().personId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'updatedAt'])
+          && userRootExists(userId);
+
+        allow delete: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(codeKey)
+          && userRootExists(userId);
+      }
+
+      // --- Subcollection: /users/{userId}/transactions/{transactionId} ---
+      match /transactions/{transactionId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(transactionId) && userRootExists(userId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(transactionId)
+          && isValidTransaction(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && userRootExists(userId)
+          && exists(/databases/$(database)/documents/users/$(userId)/persons/$(incoming().personId));
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(transactionId)
+          && isValidTransaction(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['personId', 'type', 'amount', 'date', 'description', 'referenceNumber', 'updatedAt'])
+          && userRootExists(userId)
+          && exists(/databases/$(database)/documents/users/$(userId)/persons/$(incoming().personId));
+
+        allow delete: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(transactionId)
+          && userRootExists(userId);
+      }
+
+      // --- Subcollection: /users/{userId}/settings/{settingId} ---
+      match /settings/{settingId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(settingId) && userRootExists(userId);
+        allow list: if false;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(settingId)
+          && isValidUserSetting(incoming(), userId, settingId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && userRootExists(userId);
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(settingId)
+          && isValidUserSetting(incoming(), userId, settingId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().settingType == existing().settingType
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            (settingId == 'preferences' && incoming().diff(existing()).affectedKeys().hasOnly(['currencyCode', 'currencySymbol', 'updatedAt'])) ||
+            (settingId == 'pin' && incoming().diff(existing()).affectedKeys().hasOnly(['pinEnabled', 'pinHash', 'pinSalt', 'pinLength', 'updatedAt']))
+          )
+          && userRootExists(userId);
+
+        allow delete: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(settingId)
+          && settingId == 'pin'
+          && userRootExists(userId);
+      }
+    }
+  }
+}
